@@ -1,3 +1,5 @@
+import JSZip from 'jszip';
+
 export default {
   async fetch(request, env, ctx) {
     console.log("收到请求：", request.method, request.url);
@@ -2773,11 +2775,12 @@ async function handleChunkUploadStart(chatId, userId, message, env) {
                           `📝 文件描述: ${fileDescription || '无'}\n\n` +
                           `请按照以下步骤操作:\n` +
                           `1. 请逐个发送文件分片（总共${totalChunks}个分片）\n` +
-                          `2. 分片将按照发送顺序合并\n` +
-                          `3. 所有分片上传完成后，系统将自动合并并上传\n\n` +
+                          `2. 分片将按照发送顺序打包到 ZIP 压缩包中\n` +
+                          `3. 所有分片上传完成后，系统将自动压缩成 ZIP 并上传\n\n` +
                           `⚠️ 注意事项:\n` +
                           `- 分片必须小于20MB\n` +
                           `- 分片上传过程中请勿发送其他消息\n` +
+                          `- 所有分片将被打包为 ZIP 格式文件\n` +
                           `- 使用 /chunk_cancel 取消上传\n\n` +
                           `🔄 请发送第1个分片...`;
     
@@ -2996,15 +2999,15 @@ async function mergeAndUploadChunks(chatId, userId, env) {
     const chunkState = JSON.parse(chunkStateData);
     
     // 发送处理消息
-    const sendResult = await sendMessage(chatId, `🔄 正在合并 ${chunkState.totalChunks} 个分片并上传文件...`, env);
+    const sendResult = await sendMessage(chatId, `🔄 正在打包 ${chunkState.totalChunks} 个分片到 ZIP 文件...`, env);
     const messageId = sendResult && sendResult.ok ? sendResult.result.message_id : null;
     
     try {
-      // 合并所有分片
-      let mergedBuffer = new Uint8Array(chunkState.totalSize);
-      let offset = 0;
+      // 创建 ZIP 文件并添加所有分片
+      const zip = new JSZip();
+      let totalProcessed = 0;
       
-      // 按顺序合并分片
+      // 按顺序将分片添加到 ZIP 文件
       for (let i = 1; i <= chunkState.totalChunks; i++) {
         const chunkInfo = chunkState.chunks[i];
         if (!chunkInfo) {
@@ -3017,25 +3020,35 @@ async function mergeAndUploadChunks(chatId, userId, env) {
           throw new Error(`无法获取第 ${i} 个分片数据`);
         }
         
-        // 复制到合并缓冲区
-        new Uint8Array(mergedBuffer.buffer).set(new Uint8Array(chunkData), offset);
-        offset += chunkData.byteLength;
+        // 将分片添加到 ZIP
+        // 文件名格式：chunk_001, chunk_002 等，便于排序
+        const chunkFileName = `chunk_${String(i).padStart(3, '0')}`;
+        zip.file(chunkFileName, chunkData);
+        
+        totalProcessed += chunkData.byteLength;
         
         // 更新进度
         if (messageId) {
-          await editMessage(chatId, messageId, `🔄 正在合并: ${i}/${chunkState.totalChunks} 个分片 (${Math.round((i / chunkState.totalChunks) * 100)}%)`, env);
+          await editMessage(chatId, messageId, `🔄 正在打包分片: ${i}/${chunkState.totalChunks} (${Math.round((i / chunkState.totalChunks) * 100)}%)`, env);
         }
       }
       
-      // 准备上传
+      // 生成 ZIP 文件
       if (messageId) {
-        await editMessage(chatId, messageId, `🔄 分片合并完成，正在上传文件...`, env);
+        await editMessage(chatId, messageId, `🔄 正在生成 ZIP 压缩包...`, env);
       }
       
-      // 上传合并后的文件
+      const zipBuffer = await zip.generateAsync({ type: 'arraybuffer' });
+      
+      // 准备上传
+      if (messageId) {
+        await editMessage(chatId, messageId, `🔄 ZIP 生成完成，正在上传文件...`, env);
+      }
+      
+      // 上传 ZIP 文件
       const formData = new FormData();
-      const mimeType = getMimeTypeFromFileName(chunkState.fileName);
-      formData.append('file', new File([mergedBuffer], chunkState.fileName, { type: mimeType }));
+      const zipFileName = chunkState.fileName.replace(/\.[^/.]+$/, '') + '.zip';
+      formData.append('file', new File([zipBuffer], zipFileName, { type: 'application/zip' }));
       
       const uploadUrl = new URL(env.IMG_BED_URL);
       uploadUrl.searchParams.append('returnFormat', 'full');
@@ -3044,7 +3057,7 @@ async function mergeAndUploadChunks(chatId, userId, env) {
         uploadUrl.searchParams.append('authCode', env.AUTH_CODE);
       }
       
-      console.log(`分片合并后的文件上传请求 URL: ${uploadUrl.toString()}`);
+      console.log(`分片 ZIP 压缩包上传请求 URL: ${uploadUrl.toString()}`);
       
       const uploadResponse = await fetch(uploadUrl, {
         method: 'POST',
@@ -3053,7 +3066,7 @@ async function mergeAndUploadChunks(chatId, userId, env) {
       });
       
       const responseText = await uploadResponse.text();
-      console.log('合并文件上传原始响应:', responseText);
+      console.log('ZIP 文件上传原始响应:', responseText);
       
       let uploadResult;
       try {
@@ -3072,7 +3085,7 @@ async function mergeAndUploadChunks(chatId, userId, env) {
         await env.STATS_STORAGE.put(chunkStateKey, JSON.stringify(chunkState));
         
         // 构建成功消息
-        let successMsg = `✅ 分片上传成功！\n\n` +
+        let successMsg = `✅ 分片打包上传成功！\n\n` +
                         `📄 文件名: ${chunkState.fileName}\n`;
         
         // 如果有文件描述，添加备注信息
@@ -3080,8 +3093,10 @@ async function mergeAndUploadChunks(chatId, userId, env) {
           successMsg += `📝 备注: ${chunkState.description}\n`;
         }
         
-        successMsg += `📦 文件大小: ${formatFileSize(chunkState.totalSize)}\n` +
-                     `🧩 分片数量: ${chunkState.totalChunks}\n\n` +
+        successMsg += `📦 原始文件大小: ${formatFileSize(chunkState.totalSize)}\n` +
+                     `📦 ZIP 包大小: ${formatFileSize(zipBuffer.byteLength)}\n` +
+                     `🧩 分片数量: ${chunkState.totalChunks}\n` +
+                     `📁 压缩包名称: ${zipFileName}\n\n` +
                      `🔗 URL：${fileUrl}`;
         
         if (messageId) {
@@ -3090,12 +3105,12 @@ async function mergeAndUploadChunks(chatId, userId, env) {
           await sendMessage(chatId, successMsg, env);
         }
         
-        // 更新用户统计数据
+        // 更新用户统计数据（记录 ZIP 文件大小）
         await updateUserStats(chatId, {
           fileType: 'document',
-          fileSize: chunkState.totalSize,
+          fileSize: zipBuffer.byteLength,
           success: true,
-          fileName: chunkState.fileName,
+          fileName: zipFileName,
           url: fileUrl,
           description: chunkState.description
         }, env);

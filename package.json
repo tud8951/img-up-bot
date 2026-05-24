@@ -1,0 +1,18 @@
+{
+  "name": "imgupbot",
+  "version": "1.0.0",
+  "description": "Telegram image uploader bot based on Cloudflare Workers",
+  "type": "module",
+  "main": "worker.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "node test/chunk_test.mjs"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
