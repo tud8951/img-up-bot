@@ -3012,7 +3012,7 @@ async function mergeAndUploadChunks(chatId, userId, env) {
         }
         
         // 获取分片数据
-        const chunkData = await env.STATS_STORAGE.get(chunkInfo.key, 'arrayBuffer');
+        const chunkData = await env.STATS_STORAGE.get(chunkInfo.key, { type: 'arrayBuffer' });
         if (!chunkData) {
           throw new Error(`无法获取第 ${i} 个分片数据`);
         }
@@ -3192,3 +3192,12 @@ function getMimeTypeFromFileName(fileName) {
   // 默认二进制类型
   return 'application/octet-stream';
 }
+
+// 导出部分函数以便本地测试使用
+export {
+  handleChunkUploadStart,
+  handleChunkUploadMessage,
+  handleChunkUploadCancel,
+  mergeAndUploadChunks,
+  cleanupChunkData
+};
