@@ -3020,9 +3020,10 @@ async function mergeAndUploadChunks(chatId, userId, env) {
           throw new Error(`无法获取第 ${i} 个分片数据`);
         }
         
-        // 将分片添加到 ZIP
-        // 文件名格式：chunk_001, chunk_002 等，便于排序
-        const chunkFileName = `chunk_${String(i).padStart(3, '0')}`;
+        // 将分片添加到 ZIP，保留原始文件名和后缀
+        // 文件名格式：001_originalname, 002_originalname 等，保留原始文件信息并便于排序
+        const originalFileName = chunkInfo.originalName || `chunk_${i}`;
+        const chunkFileName = `${String(i).padStart(3, '0')}_${originalFileName}`;
         zip.file(chunkFileName, chunkData);
         
         totalProcessed += chunkData.byteLength;
