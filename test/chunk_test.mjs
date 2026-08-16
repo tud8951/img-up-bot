@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+import worker from '../worker.js';
 import {
   handleChunkUploadStart,
   mergeAndUploadChunks
@@ -129,4 +130,83 @@ async function runTest() {
   console.log('最终会话状态:', finalState);
 }
 
-runTest().catch(e => { console.error('测试出错:', e); process.exit(1); });
+async function runAdminCleanTest() {
+  const env = {
+    STATS_STORAGE: new FakeKV(),
+    IMG_BED_URL: 'https://fake.imgbed/upload',
+    AUTH_CODE: 'secret-token',
+    BOT_TOKEN: 'dummy',
+    ADMIN_USERS: '1'
+  };
+
+  await env.STATS_STORAGE.put('users_list', JSON.stringify([
+    { userId: 1, username: 'admin', firstSeen: '2024-01-01T00:00:00.000Z', lastSeen: '2024-01-01T00:00:00.000Z' },
+    { userId: 2, username: 'alice', firstSeen: '2024-01-01T00:00:00.000Z', lastSeen: '2024-01-01T00:00:00.000Z' }
+  ]));
+
+  await env.STATS_STORAGE.put('user_stats_1', JSON.stringify({
+    totalUploads: 3,
+    successfulUploads: 3,
+    failedUploads: 0,
+    totalSize: 1024,
+    fileTypes: { image: 2 },
+    dailyData: { '2024-01-01': { uploads: 3, size: 1024, successful: 3, failed: 0 } },
+    createdAt: '2024-01-01T00:00:00.000Z',
+    uploadHistory: [{ id: '1', timestamp: '2024-01-01T00:00:00.000Z', fileName: 'a.png', fileType: 'image', fileSize: 512, url: 'https://example.com/a.png', description: 'hello' }]
+  }));
+
+  await env.STATS_STORAGE.put('user_stats_2', JSON.stringify({
+    totalUploads: 2,
+    successfulUploads: 2,
+    failedUploads: 0,
+    totalSize: 2048,
+    fileTypes: { document: 2 },
+    dailyData: { '2024-01-01': { uploads: 2, size: 2048, successful: 2, failed: 0 } },
+    createdAt: '2024-01-01T00:00:00.000Z',
+    uploadHistory: [{ id: '2', timestamp: '2024-01-01T00:00:00.000Z', fileName: 'b.pdf', fileType: 'document', fileSize: 1024, url: 'https://example.com/b.pdf', description: 'world' }]
+  }));
+
+  global.fetch = async function(url) {
+    if (typeof url === 'object' && url.url) url = url.url;
+    if (String(url).startsWith('https://api.telegram.org/bot')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, result: { message_id: 1 } }),
+        text: async () => JSON.stringify({ ok: true, result: { message_id: 1 } })
+      };
+    }
+    return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) };
+  };
+
+  const response = await worker.fetch(new Request('https://example.com', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: {
+        chat: { id: 12345 },
+        from: { id: 1, username: 'admin' },
+        text: '/admin clean confirm'
+      }
+    })
+  }), env, {});
+
+  if (response.status !== 200) {
+    throw new Error(`管理员清理命令返回异常状态: ${response.status}`);
+  }
+
+  const cleanedStats1 = await env.STATS_STORAGE.get('user_stats_1');
+  const cleanedStats2 = await env.STATS_STORAGE.get('user_stats_2');
+  if (cleanedStats1 !== null || cleanedStats2 !== null) {
+    throw new Error('管理员清理命令未清理用户统计数据');
+  }
+
+  console.log('管理员清理命令测试通过');
+}
+
+async function main() {
+  await runTest();
+  await runAdminCleanTest();
+}
+
+main().catch(e => { console.error('测试出错:', e); process.exit(1); });

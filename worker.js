@@ -127,7 +127,7 @@ async function handleRequest(request, env) {
         
         if (!subCommand) {
           // 显示管理员帮助
-          await sendMessage(chatId, `🔐 *管理员命令面板*\n\n以下是可用的管理员命令：\n\n/admin ban [用户ID] - 限制指定用户使用机器人\n/admin unban [用户ID] - 解除对指定用户的限制\n/admin list - 查看所有被限制的用户\n/admin users - 查看所有使用过机器人的用户\n/admin stats - 查看机器人使用统计\n/admin broadcast [消息] - 向所有用户广播消息\n/admin autoclean [天数] - 设置自动删除多少天前的内容\n/admin autoclean status - 查看当前自动清理设置`, env);
+          await sendMessage(chatId, `🔐 *管理员命令面板*\n\n以下是可用的管理员命令：\n\n/admin ban [用户ID] - 限制指定用户使用机器人\n/admin unban [用户ID] - 解除对指定用户的限制\n/admin list - 查看所有被限制的用户\n/admin users - 查看所有使用过机器人的用户\n/admin stats - 查看机器人使用统计\n/admin clean - 清理上传记录和统计信息\n/admin broadcast [消息] - 向所有用户广播消息\n/admin autoclean [天数] - 设置自动删除多少天前的内容\n/admin autoclean status - 查看当前自动清理设置`, env);
           return new Response('OK', { status: 200 });
         }
         
@@ -220,6 +220,28 @@ async function handleRequest(request, env) {
           message += `📦 总上传大小: ${formatFileSize(stats.totalSize || 0)}\n`;
           message += `⛔ 被限制用户数: ${stats.bannedUsers || 0}\n`;
           await sendMessage(chatId, message, env);
+          return new Response('OK', { status: 200 });
+        }
+
+        if (subCommand === 'clean') {
+          const confirmFlag = text.split(' ')[2]?.toLowerCase();
+          if (confirmFlag !== 'confirm') {
+            await sendMessage(chatId, `🧹 *清理上传记录和统计信息*
+
+此操作会删除所有用户的上传历史和统计数据，包括：
+- user_stats_* 统计记录
+- uploadHistory 上传历史
+- users_list 用户列表
+- auto_clean_settings 自动清理设置
+- banned_users 禁止列表（可选）
+
+请确认后再执行：
+/admin clean confirm`, env);
+            return new Response('OK', { status: 200 });
+          }
+
+          const cleanResult = await cleanAllUploadRecordsAndStats(env);
+          await sendMessage(chatId, `✅ 已执行清理：\n${cleanResult.message}`, env);
           return new Response('OK', { status: 200 });
         }
         
@@ -2543,6 +2565,45 @@ function getChineseISOString() {
   // 将中国时间转换回UTC以获得正确的ISO字符串
   const utcTime = new Date(chinaTime.getTime() - 8 * 60 * 60 * 1000);
   return utcTime.toISOString();
+}
+
+// 清理所有上传记录和统计信息
+async function cleanAllUploadRecordsAndStats(env) {
+  try {
+    if (!env.STATS_STORAGE) {
+      return { deletedUsers: 0, clearedStats: 0, message: 'KV 存储未配置，未执行清理。' };
+    }
+
+    const usersListKey = 'users_list';
+    const settingsKey = 'auto_clean_settings';
+    const bannedUsersKey = 'banned_users';
+
+    const usersListData = await env.STATS_STORAGE.get(usersListKey);
+    const usersList = usersListData ? JSON.parse(usersListData) : [];
+    let clearedStats = 0;
+
+    for (const user of usersList) {
+      const statsKey = `user_stats_${user.userId}`;
+      const statsData = await env.STATS_STORAGE.get(statsKey);
+      if (statsData) {
+        await env.STATS_STORAGE.delete(statsKey);
+        clearedStats += 1;
+      }
+    }
+
+    await env.STATS_STORAGE.delete(usersListKey);
+    await env.STATS_STORAGE.delete(settingsKey);
+    await env.STATS_STORAGE.delete(bannedUsersKey);
+
+    return {
+      deletedUsers: usersList.length,
+      clearedStats,
+      message: `已清理 ${usersList.length} 个用户的统计记录，累计清理 ${clearedStats} 个统计对象，并重置用户列表、自动清理设置和禁用列表。`
+    };
+  } catch (error) {
+    console.error('清理所有上传记录和统计信息时出错:', error);
+    return { deletedUsers: 0, clearedStats: 0, message: `清理失败：${error.message}` };
+  }
 }
 
 // 获取自动清理设置
